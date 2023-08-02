@@ -28,6 +28,7 @@ from lib.default import _C as cfg
 from lib.default import update_config
 import pose_hrnet
 import pose_resnet
+from tqdm import tqdm
 
 CTX = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -111,13 +112,13 @@ def get_pose_estimation_prediction(pose_model, image, centers, scales, transform
 
     # compute output heatmap
     output = pose_model(model_inputs.to(CTX))
-    coords, _ = get_final_preds(
+    coords, confidence = get_final_preds(
         cfg,
         output.cpu().detach().numpy(),
         np.asarray(centers),
         np.asarray(scales))
 
-    return coords
+    return coords, confidence
 
 
 def box_to_center_scale(box, model_image_width, model_image_height):
@@ -174,7 +175,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train keypoints network')
     # general
     parser.add_argument('--cfg', type=str, required=True)
-    parser.add_argument('--videoFile', type=str, required=True)
+    parser.add_argument('--videoFile', type=str, required=False)
     parser.add_argument('--outputDir', type=str, default='/output/')
     parser.add_argument('--inferenceFps', type=int, default=25)
     parser.add_argument('--writeBoxFrames', action='store_true')
@@ -194,8 +195,7 @@ def parse_args():
     return args
 
 
-def main():
-    # transformation
+def initialize():
     pose_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -208,7 +208,7 @@ def main():
     torch.backends.cudnn.enabled = cfg.CUDNN.ENABLED
 
     args = parse_args()
-    print("infernce fps: ", args.inferenceFps)
+    print("inference fps: ", args.inferenceFps)
     update_config(cfg, args)
     pose_dir = prepare_output_dirs(args.outputDir)
 
@@ -227,13 +227,17 @@ def main():
 
     pose_model.to(CTX)
     pose_model.eval()
+    return args, box_model, pose_model, pose_transform
+
+
+def main():
+    args, box_model, pose_model, pose_transform = initialize()
     # files = listdir(r"F:\pingpong-all-data\2023-4-19_北体合作_动作示范视频_实验用小规模数据集") 
-    files = listdir(r"C:\Users\weiji\Downloads\fineGym_test")
-    files = listdir(r"C:\Users\weiji\Downloads\diving")
-    files = listdir(r"../video")
+    files = listdir_full_path(r"C:\Users\weiji\Downloads\fineGym_test")
+    files = listdir_full_path(r"C:\Users\weiji\Downloads\diving")
+    # files = listdir(r"../video")
     print(files)
     for f in files:
-        # path = "F:\pingpang-all-data\Video_Iphone_0110\视频切分结果\IMG_2405\IMG_2405_5914_6083.mp4"
         generate_kps(f, args, box_model, pose_model, pose_transform)
     # python inference.py --cfg inference-config.yaml --videoFile ../video/IMG_2411_153_327.mp4 --writeBoxFrames --outputDir F:\pingpang-all-data\Video_iPhone_0311\关键点提取结果\IMG_3114  TEST.MODEL_FILE pose_hrnet_w32_256x192.pth 
 
@@ -268,126 +272,123 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
 
     vidcap = cv2.VideoCapture(args.videoFile)
     print(args.videoFile)
-    fps = vidcap.get(cv2.CAP_PROP_FPS)
+    frame_num, fps, duration, width, height = video_info(args.videoFile)
     if fps < args.inferenceFps:
         print('desired inference fps is ' + str(args.inferenceFps) + ' but video fps is ' + str(fps))
         exit()
     print("the fps is ", fps, " the inferenceFps is: ", args.inferenceFps)
-    skip_frame_cnt = round(fps / args.inferenceFps)
     frame_width = int(vidcap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(vidcap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     outcap = cv2.VideoWriter(
         '{}/{}_pose.avi'.format(out_dir, os.path.splitext(os.path.basename(args.videoFile))[0]),
-        cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), int(skip_frame_cnt), (frame_width, frame_height))
+        cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), int(10), (frame_width, frame_height))
 
     count = 0
     ret, image_bgr = vidcap.read()
-    while ret:
-        total_now = time.time()
-        ret, image_bgr = vidcap.read()
-        count += 1
-
-        if not ret:
-            continue
-
-        if count % skip_frame_cnt != 0:
-            continue
-            pass
-
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
-        # Clone 2 image for person detection and pose estimation
-        if cfg.DATASET.COLOR_RGB:
-            image_per = image_rgb.copy()
-            image_pose = image_rgb.copy()
-        else:
-            image_per = image_bgr.copy()
-            image_pose = image_bgr.copy()
-
-        # Clone 1 image for debugging purpose
-        image_debug = image_bgr.copy()
-
-        # object detection box
-        now = time.time()
-        pred_boxes = get_person_detection_boxes(box_model, image_per, threshold=0.9)
-        then = time.time()
-        print("Find person bbox in: {} sec".format(then - now))
-
-        # Can not find people. Move to next frame
-        if not pred_boxes:
+    pose_preds_frames = np.zeros((1, frame_num, 17, 2))
+    confidence_frames = np.zeros((1, frame_num, 17, 1))
+    with tqdm(total=frame_num) as pbar:
+        while ret:
+            total_now = time.time()
+            ret, image_bgr = vidcap.read()
             count += 1
-            continue
 
-        sig_box = []
-        img_l = len(image_debug[0])
-        max_box = 1
-        tar_box = pred_boxes[0]
-        for b in pred_boxes:
-            if lenof(b[0], b[1]) > 200 and b[0][0] < 0.5 * img_l and b[0][1] < 0.5 * img_l:
-                if lenof(b[0], b[1]) > max_box:
-                    max_box = lenof(b[0], b[1])
-                    tar_box = b
-        sig_box.append(tar_box)
-        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 255, 255)]
+            if not ret:
+                continue
 
-        if args.writeBoxFrames:
-            i = 0
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+
+            # Clone 2 image for person detection and pose estimation
+            if cfg.DATASET.COLOR_RGB:
+                image_per = image_rgb.copy()
+                image_pose = image_rgb.copy()
+            else:
+                image_per = image_bgr.copy()
+                image_pose = image_bgr.copy()
+
+            # Clone 1 image for debugging purpose
+            image_debug = image_bgr.copy()
+
+            # object detection box
+            now = time.time()
+            pred_boxes = get_person_detection_boxes(box_model, image_per, threshold=0.9)
+            then = time.time()
+            # print("Find person bbox in: {} sec".format(then - now))
+
+            # Can not find people. Move to next frame
+            if not pred_boxes:
+                count += 1
+                continue
+
+            sig_box = []
+            max_box = pred_boxes[0]
+            for b in pred_boxes:
+                if squareof(b[0], b[1]) > squareof(max_box[0], max_box[1]):
+                    max_box = b
+            sig_box.append(max_box)
+            colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 255, 255)]
+
+            if args.writeBoxFrames:
+                i = 0
+                for box in sig_box:
+                    # print("box:", box, end=" ")
+                    # print(lenof(box[0], box[1]))
+                    box[0] = (int(box[0][0]), int(box[0][1]))
+                    box[1] = (int(box[1][0]), int(box[1][1]))
+                    cv2.rectangle(image_debug, box[0], box[1], color=colors[i % 4],
+                                  thickness=3)  # Draw Rectangle with the coordinates
+                    cv2.putText(image_debug, str(i), box[0], cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
+                    i = i + 1
+
+            # pose estimation : for multiple people
+            centers = []
+            scales = []
             for box in sig_box:
-                # print("box:", box, end=" ")
-                # print(lenof(box[0], box[1]))
-                box[0] = (int(box[0][0]), int(box[0][1]))
-                box[1] = (int(box[1][0]), int(box[1][1]))
-                cv2.rectangle(image_debug, box[0], box[1], color=colors[i],
-                              thickness=3)  # Draw Rectangle with the coordinates
-                cv2.putText(image_debug, str(i), box[0], cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
-                i = i + 1
+                center, scale = box_to_center_scale(box, cfg.MODEL.IMAGE_SIZE[0], cfg.MODEL.IMAGE_SIZE[1])
+                centers.append(center)
+                scales.append(scale)
 
-        # pose estimation : for multiple people
-        centers = []
-        scales = []
-        for box in sig_box:
-            center, scale = box_to_center_scale(box, cfg.MODEL.IMAGE_SIZE[0], cfg.MODEL.IMAGE_SIZE[1])
-            centers.append(center)
-            scales.append(scale)
+            now = time.time()
+            pose_preds, confidence = get_pose_estimation_prediction(pose_model, image_pose, centers, scales,
+                                                                    transform=pose_transform)
+            then = time.time()
+            # print("Find person pose in: {} sec".format(then - now))
+            # print(pose_preds)
+            pose_preds_frames[0, count - 1, :, :] = pose_preds[0, :, :]
+            confidence_frames[0, count - 1, :, :] = confidence[0, :, :]
 
-        now = time.time()
-        pose_preds = get_pose_estimation_prediction(pose_model, image_pose, centers, scales, transform=pose_transform)
-        then = time.time()
-        # print("Find person pose in: {} sec".format(then - now))
-        # print(pose_preds)
+            new_csv_row = []
 
-        new_csv_row = []
+            # draw points on image
+            for coords in pose_preds:
+                # Draw each point on image
+                new_csv_row.extend([count])
+                for coord in coords:
+                    x_coord, y_coord = int(coord[0]), int(coord[1])
+                    cv2.circle(image_debug, (x_coord, y_coord), 4, (255, 0, 0), 2)
+                    new_csv_row.extend([x_coord, y_coord])
 
-        # draw points on image
-        for coords in pose_preds:
-            # Draw each point on image
-            new_csv_row.extend([count])
-            for coord in coords:
-                x_coord, y_coord = int(coord[0]), int(coord[1])
-                cv2.circle(image_debug, (x_coord, y_coord), 4, (255, 0, 0), 2)
-                new_csv_row.extend([x_coord, y_coord])
+            total_then = time.time()
 
-        total_then = time.time()
+            text = "{:03.2f} sec".format(total_then - total_now)
+            cv2.putText(image_debug, text, (100, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, (0, 0, 255), 2, cv2.LINE_AA)
 
-        text = "{:03.2f} sec".format(total_then - total_now)
-        cv2.putText(image_debug, text, (100, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                    1, (0, 0, 255), 2, cv2.LINE_AA)
+            # cv2.imshow("pos", image_debug)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-        # cv2.imshow("pos", image_debug)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            csv_output_rows.append(new_csv_row)
+            img_file = os.path.join(pose_out_dir, 'pose_{:08d}.jpg'.format(count))
+            img_file_ske = os.path.join(ske_out_dir, 'ske_{:08d}.jpg'.format(count))
+            # cv2.imwrite(img_file, image_debug)
+            # cv2.imencode('.jpg', image_debug)[1].tofile(img_file)
+            # draw_skeleton_kps(pose_preds[0], img_file_ske)
+            image_debug = draw_skeleton_kps_on_org(pose_preds[0], image_debug)
 
-        csv_output_rows.append(new_csv_row)
-        img_file = os.path.join(pose_out_dir, 'pose_{:08d}.jpg'.format(count))
-        img_file_ske = os.path.join(ske_out_dir, 'ske_{:08d}.jpg'.format(count))
-        # cv2.imwrite(img_file, image_debug)
-        # cv2.imencode('.jpg', image_debug)[1].tofile(img_file)
-        # draw_skeleton_kps(pose_preds[0], img_file_ske)
-        image_debug = draw_skeleton_kps_on_org(pose_preds[0], image_debug)
-
-        # print(Fore.CYAN +img_file)
-        outcap.write(image_debug)
-        # print("in the loop...")
+            # print(Fore.CYAN +img_file)
+            outcap.write(image_debug)
+            pbar.update(1)
 
     # write csv
     csv_headers = ['frame']
@@ -404,11 +405,19 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
 
     vidcap.release()
     outcap.release()
-
     cv2.destroyAllWindows()
+
+
+    return del_zero_array(pose_preds_frames), del_zero_array(confidence_frames)
+
+
+def del_zero_array(array):
+    zero_subarrays_mask = np.all(array == 0, axis=(2,3))
+    filtered_array = array[~zero_subarrays_mask]
+    return np.array([filtered_array])
 
 
 if __name__ == '__main__':
     main()
 
-    # python inference.py --cfg inference-config.yaml --videoFile ../video/IMG_2411_153_327.mp4 --writeBoxFrames --outputDir F:\pingpang-all-data\Video_Iphone_0110\关键点提取结果\IMG_2413  TEST.MODEL_FILE pose_hrnet_w32_256x192.pth
+    # python inference.py --cfg inference-config.yaml --videoFile ../video/IMG_2411_153_327.mp4 --writeBoxFrames --outputDir ./output  TEST.MODEL_FILE pose_hrnet_w32_256x192.pth
