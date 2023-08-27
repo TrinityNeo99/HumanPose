@@ -174,11 +174,11 @@ def prepare_output_dirs(prefix='/output/'):
 def parse_args():
     parser = argparse.ArgumentParser(description='Train keypoints network')
     # general
-    parser.add_argument('--cfg', type=str, required=True)
+    parser.add_argument('--cfg', type=str, default="./config/inference-config.yaml")
     parser.add_argument('--videoFile', type=str, required=False)
     parser.add_argument('--outputDir', type=str, default='/output/')
     parser.add_argument('--inferenceFps', type=int, default=25)
-    parser.add_argument('--writeBoxFrames', action='store_true')
+    parser.add_argument('--writeBoxFrames', action='store_true', default=True)
 
     parser.add_argument('opts',
                         help='Modify config options using the command-line',
@@ -242,7 +242,8 @@ def main():
     # python inference.py --cfg inference-config.yaml --videoFile ../video/IMG_2411_153_327.mp4 --writeBoxFrames --outputDir F:\pingpang-all-data\Video_iPhone_0311\关键点提取结果\IMG_3114  TEST.MODEL_FILE pose_hrnet_w32_256x192.pth 
 
 
-def generate_kps(video_path, args, box_model, pose_model, pose_transform):
+def generate_kps(video_path, args, box_model, pose_model, pose_transform, save_video=True, save_key_points_csv=False,
+                 save_ske_on_image=False, save_ske_on_black=False):
     csv_output_rows = []
     # Loading an video
     args.videoFile = video_path
@@ -313,7 +314,6 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
             now = time.time()
             pred_boxes = get_person_detection_boxes(box_model, image_per, threshold=0.9)
             then = time.time()
-            # print("Find person bbox in: {} sec".format(then - now))
 
             # Can not find people. Move to next frame
             if not pred_boxes:
@@ -331,8 +331,6 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
             if args.writeBoxFrames:
                 i = 0
                 for box in sig_box:
-                    # print("box:", box, end=" ")
-                    # print(lenof(box[0], box[1]))
                     box[0] = (int(box[0][0]), int(box[0][1]))
                     box[1] = (int(box[1][0]), int(box[1][1]))
                     cv2.rectangle(image_debug, box[0], box[1], color=colors[i % 4],
@@ -348,12 +346,8 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
                 centers.append(center)
                 scales.append(scale)
 
-            now = time.time()
             pose_preds, confidence = get_pose_estimation_prediction(pose_model, image_pose, centers, scales,
                                                                     transform=pose_transform)
-            then = time.time()
-            # print("Find person pose in: {} sec".format(then - now))
-            # print(pose_preds)
             pose_preds_frames[0, count - 1, :, :] = pose_preds[0, :, :]
             confidence_frames[0, count - 1, :, :] = confidence[0, :, :]
 
@@ -374,20 +368,19 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
             cv2.putText(image_debug, text, (100, 50), cv2.FONT_HERSHEY_SIMPLEX,
                         1, (0, 0, 255), 2, cv2.LINE_AA)
 
-            # cv2.imshow("pos", image_debug)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
             csv_output_rows.append(new_csv_row)
             img_file = os.path.join(pose_out_dir, 'pose_{:08d}.jpg'.format(count))
             img_file_ske = os.path.join(ske_out_dir, 'ske_{:08d}.jpg'.format(count))
-            # cv2.imwrite(img_file, image_debug)
-            # cv2.imencode('.jpg', image_debug)[1].tofile(img_file)
-            # draw_skeleton_kps(pose_preds[0], img_file_ske)
-            image_debug = draw_skeleton_kps_on_org(pose_preds[0], image_debug)
-
-            # print(Fore.CYAN +img_file)
-            outcap.write(image_debug)
+            if save_ske_on_image:
+                cv2.imencode('.jpg', image_debug)[1].tofile(img_file)
+            if save_ske_on_black:
+                draw_skeleton_kps(pose_preds[0], img_file_ske)
+            if save_video:
+                image_debug = draw_skeleton_kps_on_org(pose_preds[0], image_debug)
+                outcap.write(image_debug)
             pbar.update(1)
 
     # write csv
@@ -398,21 +391,20 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform):
     csv_output_filename = os.path.join(out_dir, 'pose-data.csv')
     print(Fore.YELLOW + "csv filename is " + csv_output_filename)
     print(csv_output_filename)
-    with open(csv_output_filename, 'w', newline='') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        csvwriter.writerow(csv_headers)
-        csvwriter.writerows(csv_output_rows)
-
+    if save_key_points_csv:
+        with open(csv_output_filename, 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerow(csv_headers)
+            csvwriter.writerows(csv_output_rows)
     vidcap.release()
     outcap.release()
     cv2.destroyAllWindows()
-
 
     return del_zero_array(pose_preds_frames), del_zero_array(confidence_frames)
 
 
 def del_zero_array(array):
-    zero_subarrays_mask = np.all(array == 0, axis=(2,3))
+    zero_subarrays_mask = np.all(array == 0, axis=(2, 3))
     filtered_array = array[~zero_subarrays_mask]
     return np.array([filtered_array])
 
