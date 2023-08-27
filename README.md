@@ -3,7 +3,7 @@
 - The extracted data are in [pyskl format](https://github.com/kennymckormick/pyskl/tree/main/tools/data)
 - Including keypoint x, y and confidence
 - Easy to use, free of mmcv, mmdet packages
-## Usage
+## HRnet Usage
 - Download HRnet pretrained model `pose_hrnet_w32_256*192.pth` in[Baidu Drive](https://pan.baidu.com/s/1RHJfjatYaZ2j4kVnhvlYPw?pwd=hxn8), and move it in `./resource`
 - Modify the data source path in `extract_human_pose.py`: which only includes your raw video;
 - Modify the output dir in `extract_human_pose.py`, where the output annotations.pkl is saved;
@@ -14,3 +14,6 @@
   - ...
   - nameN.mp4 n
 - `python extract_human_pose.py --cfg ./config/inference-config.yaml --writeBoxFrames --outputDir ./output  TEST.MODEL_FILE ./resource/pose_hrnet_w32_256x192.pth`
+
+
+## Mediapipe Usage
