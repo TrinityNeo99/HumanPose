@@ -29,6 +29,6 @@ class Extract():
         logger.info(f"Total cost: {round((end - start), 2)} second")
 
 if __name__ == '__main__':
-    e = Extract(video_dir=r"F:\pingpong-all-data\2023-4-19_北体合作_动作示范视频_实验用小规模数据集-mini")
+    e = Extract(video_dir=r"/root/2DHPE/data/pingpong-109-coco-mini")
     e.run()
     print("woof woof I quit, bye!~")

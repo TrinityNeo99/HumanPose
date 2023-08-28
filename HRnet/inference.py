@@ -242,12 +242,12 @@ def main():
     # python inference.py --cfg inference-config.yaml --videoFile ../video/IMG_2411_153_327.mp4 --writeBoxFrames --outputDir F:\pingpang-all-data\Video_iPhone_0311\关键点提取结果\IMG_3114  TEST.MODEL_FILE pose_hrnet_w32_256x192.pth 
 
 
-def generate_kps(video_path, args, box_model, pose_model, pose_transform, save_video=True, save_key_points_csv=False,
+def generate_kps(video_path, args, box_model, pose_model, pose_transform, save_org_video_image=False, save_video=True, save_key_points_csv=False,
                  save_ske_on_image=False, save_ske_on_black=False):
     csv_output_rows = []
     # Loading an video
     args.videoFile = video_path
-    name = video_path.split("\\")[-1].replace(".mp4", "")
+    name = os.path.basename(video_path).replace(".mp4", "")
     print("the name is", name)
 
     out_dir = os.path.join(args.outputDir, name)
@@ -372,8 +372,11 @@ def generate_kps(video_path, args, box_model, pose_model, pose_transform, save_v
                 break
 
             csv_output_rows.append(new_csv_row)
+            img_org = os.path.join(pose_out_dir, 'org_{:08d}.jpg'.format(count))
             img_file = os.path.join(pose_out_dir, 'pose_{:08d}.jpg'.format(count))
             img_file_ske = os.path.join(ske_out_dir, 'ske_{:08d}.jpg'.format(count))
+            if save_org_video_image:
+                cv2.imencode('.jpg', image_rgb)[1].tofile(img_org)
             if save_ske_on_image:
                 cv2.imencode('.jpg', image_debug)[1].tofile(img_file)
             if save_ske_on_black:
